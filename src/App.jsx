@@ -28,7 +28,8 @@ const PODCASTS = [
   { id: "p8", title: "Misterios Sin Resolver", author: "Elena Vidal", category: "True Crime", color: "#5A4D7C", mono: "MR", desc: "Casos reales sin respuesta, contados con cuidado y respeto. Que no te dejarán dormir." },
 ];
 
-const mkEp = (id, pid, title, min, date, desc) => ({ id, pid, title, durationSec: min * 60, dateLabel: date, desc });
+const PLACEHOLDER_AUDIO = "https://www.soundhelix.com/examples/mp3/SoundHelix-Song-1.mp3";
+const mkEp = (id, pid, title, min, date, desc, url = PLACEHOLDER_AUDIO) => ({ id, pid, title, durationSec: min * 60, dateLabel: date, desc, url });
 const EPISODES = [
   mkEp("e1", "p1", "El imperio que cayó en un solo día", 48, "Hace 2 días", "Una jornada de decisiones precipitadas que cambió el mapa de un continente para siempre."),
   mkEp("e2", "p1", "Cartas desde la trinchera", 39, "Hace 6 días", "Las palabras íntimas de quienes vivieron la guerra desde dentro, leídas un siglo después."),
@@ -108,30 +109,70 @@ export default function App() {
   const [progress, setProgress] = useState(saved.progress || { e1: 18 * 60, e6: 11 * 60, e14: 5 * 60, e2: 39 * 60, e10: 33 * 60 });
   const [dragFrom, setDragFrom] = useState(null);
   const [dragOver, setDragOver] = useState(null);
-  const timerRef = useRef(null);
+  const audioRef = useRef(typeof Audio !== 'undefined' ? new Audio() : null);
+  const stateRef = useRef({});
 
   const state = { screen, detailPid, playerOpen, chaptersOpen, searchQuery, isPlaying, speed, favorites, listened, downloads, queue, nowPlaying, progress };
+  stateRef.current = { nowPlaying, queue, progress, isPlaying, speed };
 
   useEffect(() => { saveState(state); }, [favorites, listened, downloads, queue, nowPlaying, progress, speed]);
 
   useEffect(() => {
-    timerRef.current = setInterval(() => {
-      if (!isPlaying) return;
-      setProgress(prev => {
-        const ep = EP_MAP[nowPlaying]; if (!ep) return prev;
-        const cur = prev[nowPlaying] || 0;
-        const nx = cur + speed;
-        if (nx >= ep.durationSec) { setIsPlaying(false); return prev; }
-        return { ...prev, [nowPlaying]: nx };
-      });
-    }, 1000);
-    return () => clearInterval(timerRef.current);
-  }, [isPlaying, nowPlaying, speed]);
+    const audio = audioRef.current;
+    if (!audio) return;
+    const ep = EP_MAP[nowPlaying];
+    if (!ep?.url) { audio.src = ''; return; }
+    const { progress, speed, isPlaying } = stateRef.current;
+    audio.src = ep.url;
+    audio.currentTime = progress[nowPlaying] || 0;
+    audio.playbackRate = speed;
+    if (isPlaying) audio.play().catch(() => setIsPlaying(false));
+  }, [nowPlaying]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isPlaying) { audio.play().catch(() => setIsPlaying(false)); } else { audio.pause(); }
+  }, [isPlaying]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    audio.playbackRate = speed;
+  }, [speed]);
+
+  useEffect(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    const onTimeUpdate = () => {
+      const { nowPlaying } = stateRef.current;
+      setProgress(prev => ({ ...prev, [nowPlaying]: audio.currentTime }));
+    };
+    const onEnded = () => {
+      const { queue, nowPlaying } = stateRef.current;
+      const i = queue.indexOf(nowPlaying);
+      const nid = queue[i + 1];
+      if (!nid) { setIsPlaying(false); return; }
+      setProgress(p => { const ep = EP_MAP[nid]; const cur = p[nid] || 0; return cur >= ep.durationSec ? { ...p, [nid]: 0 } : p; });
+      setNowPlaying(nid); setIsPlaying(true);
+    };
+    audio.addEventListener('timeupdate', onTimeUpdate);
+    audio.addEventListener('ended', onEnded);
+    return () => {
+      audio.removeEventListener('timeupdate', onTimeUpdate);
+      audio.removeEventListener('ended', onEnded);
+    };
+  }, []);
 
   // mutations
   const playEp = (id) => {
+    const audio = audioRef.current;
+    const ep = EP_MAP[id];
+    const cur = progress[id] || 0;
+    const startTime = cur >= ep.durationSec ? 0 : cur;
     setQueue(q => has(q, id) ? q : [...q, id]);
-    setProgress(p => { const ep = EP_MAP[id]; const cur = p[id] || 0; return cur >= ep.durationSec ? { ...p, [id]: 0 } : p; });
+    if (startTime === 0) setProgress(p => ({ ...p, [id]: 0 }));
+    if (id === nowPlaying && audio) audio.currentTime = startTime;
     setNowPlaying(id); setIsPlaying(true);
   };
   const nextEp = () => {
@@ -140,8 +181,22 @@ export default function App() {
     setProgress(p => { const ep = EP_MAP[nid]; const cur = p[nid] || 0; return cur >= ep.durationSec ? { ...p, [nid]: 0 } : p; });
     setNowPlaying(nid); setIsPlaying(true);
   };
-  const skip = (d) => setProgress(p => { const ep = EP_MAP[nowPlaying]; if (!ep) return p; const v = Math.max(0, Math.min(ep.durationSec, (p[nowPlaying] || 0) + d)); return { ...p, [nowPlaying]: v }; });
-  const seekFraction = (f) => setProgress(p => { const ep = EP_MAP[nowPlaying]; if (!ep) return p; return { ...p, [nowPlaying]: Math.max(0, Math.min(1, f)) * ep.durationSec }; });
+  const skip = (d) => {
+    const audio = audioRef.current;
+    const ep = EP_MAP[nowPlaying];
+    if (!ep) return;
+    const v = Math.max(0, Math.min(ep.durationSec, (progress[nowPlaying] || 0) + d));
+    if (audio) audio.currentTime = v;
+    setProgress(p => ({ ...p, [nowPlaying]: v }));
+  };
+  const seekFraction = (f) => {
+    const audio = audioRef.current;
+    const ep = EP_MAP[nowPlaying];
+    if (!ep) return;
+    const v = Math.max(0, Math.min(1, f)) * ep.durationSec;
+    if (audio) audio.currentTime = v;
+    setProgress(p => ({ ...p, [nowPlaying]: v }));
+  };
   const reorder = (from, to) => { if (from == null || to == null || from === to) return; const q = [...queue]; const [m] = q.splice(from, 1); q.splice(to, 0, m); setQueue(q); };
 
   const nowEp = nowPlaying ? EP_MAP[nowPlaying] : null;

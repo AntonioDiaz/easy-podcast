@@ -45,14 +45,13 @@ The app is a functional prototype of a podcast client with:
 - Mini player and full-screen player
 - Navigation, favorites, downloads, reorderable queue (drag & drop)
 - Persistence via `localStorage`
-- **No real audio** — the player simulates time progress with a timer
-- **No real API** — podcasts and episodes are hardcoded data in `App.jsx`
+- **Real audio** — HTML5 `<audio>` element with play/pause/seek/speed and auto-advance to next episode
+- **No real API** — podcasts and episodes are hardcoded data in `App.jsx` (placeholder audio: SoundHelix MP3)
 
 ## Pending next steps
 
-- **Real audio:** add HTML5 `<audio>` or the `@capacitor-community/audio` plugin
-- **Content API:** connect to the Podcast Index API (free) to search and load real podcasts
 - **Media Session API:** playback controls in the Android notification bar
+- **Content API:** connect to the Podcast Index API (free) to search and load real podcasts
 - **APK signing:** required to publish on Google Play
 
 ## Useful commands
