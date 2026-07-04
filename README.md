@@ -47,22 +47,26 @@ The app is a functional prototype of a podcast client with:
 - Persistence via `localStorage`
 - **Real audio** — HTML5 `<audio>` element with play/pause/seek/speed and auto-advance to next episode
 - **Media Session (web only)** — metadata, playback state and control handlers via `navigator.mediaSession`; works in desktop browsers but **not** inside the Android WebView (see below)
-- **Real content (Search)** — the Search screen queries the free **iTunes Search API** (no key, no signup, CORS-enabled). Podcast detail loads real episodes with real audio URLs and cover art.
-- **Demo content (Home)** — the Home screen (favorites, "discover") still shows hardcoded sample data
+- **Real content** — powered by the free **iTunes Search API** (no key, no signup, CORS-enabled):
+  - Search returns real podcasts; podcast detail loads real episodes with real audio URLs
+  - Home "Discover" shows the real Spanish top-podcasts chart
+  - Real cover art everywhere (`Cover` renders the podcast image when available)
+- **Real favorites & continue-listening persist** — the metadata of favorited/played real podcasts and episodes is saved to `localStorage`, so they survive an app restart (not just their ids)
+- **Demo seed data** — a small set of hardcoded podcasts/episodes still seeds a fresh install until you follow/play real ones
 
 ## iTunes Search API
 
-No credentials required. Two endpoints, both CORS-enabled so they work in the browser and the Android WebView:
+No credentials required. All CORS-enabled, so they work in the browser and the Android WebView:
 
 - **Search podcasts:** `https://itunes.apple.com/search?media=podcast&term=<query>`
 - **Episodes for a podcast:** `https://itunes.apple.com/lookup?id=<collectionId>&entity=podcastEpisode`
+- **Top podcasts (Discover):** `https://itunes.apple.com/es/rss/toppodcasts/limit=<n>/json`
 
 > Podcast Index was the original plan but blocks signups from free email providers (Gmail/Outlook); iTunes needs no account.
 
 ## Pending next steps
 
-- **Wire the Home screen to real content** (currently demo data)
-- **Native Android media notification:** the Android WebView does not support the Media Session Web API, so the lock-screen/notification controls require a native Capacitor plugin (e.g. `@jofr/capacitor-media-session`) plus the `POST_NOTIFICATIONS` runtime permission. Deferred.
+- **Native Android media notification:** the Android WebView does not support the Media Session Web API, so the lock-screen/notification controls require a native Capacitor plugin (e.g. `@jofr/capacitor-media-session`) plus the `POST_NOTIFICATIONS` runtime permission. Deferred. (Background audio already works without it.)
 - **APK signing:** required to publish on Google Play
 
 ## Useful commands

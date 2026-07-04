@@ -104,14 +104,67 @@ async function apiEpisodes(podcast) {
   return eps;
 }
 
+const mapTopEntry = (e) => {
+  const id = e.id?.attributes?.["im:id"];
+  const imgs = e["im:image"] || [];
+  let art = imgs.length ? imgs[imgs.length - 1].label : null;
+  if (art) art = art.replace(/\/\d+x\d+bb\.(png|jpg)/, "/600x600bb.$1");
+  const name = e["im:name"]?.label || "Podcast";
+  const artist = e["im:artist"]?.label || "";
+  return {
+    id: "it" + id,
+    collectionId: id,
+    title: name,
+    author: artist,
+    category: e.category?.attributes?.label || "Podcast",
+    color: colorFor(name),
+    mono: monoFor(artist || name),
+    desc: e.summary?.label || name,
+    artwork: art,
+  };
+};
+
+async function apiTopPodcasts(limit = 24) {
+  const res = await fetch(`${ITUNES}/es/rss/toppodcasts/limit=${limit}/json`);
+  const data = await res.json();
+  const podcasts = ((data.feed && data.feed.entry) || []).map(mapTopEntry).filter(p => p.collectionId);
+  podcasts.forEach(p => { P_MAP[p.id] = p; });
+  return podcasts;
+}
+
 // ─── Helpers ───────────────────────────────────────────────────────
 const fmt = (sec) => { sec = Math.max(0, Math.round(sec)); const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60; const p = n => String(n).padStart(2, "0"); return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${m}:${p(s)}`; };
 const durLabel = (sec) => { const m = Math.round(sec / 60); return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min` : `${m} min`; };
 const has = (arr, id) => arr.includes(id);
 const toggle = (arr, id) => has(arr, id) ? arr.filter(x => x !== id) : [...arr, id];
 
-const loadState = () => { try { const r = localStorage.getItem("pod_app_v2"); return r ? JSON.parse(r) : {}; } catch { return {}; } };
-const saveState = (s) => { try { localStorage.setItem("pod_app_v2", JSON.stringify({ favorites: s.favorites, listened: s.listened, downloads: s.downloads, queue: s.queue, nowPlaying: s.nowPlaying, progress: s.progress, speed: s.speed })); } catch {} };
+const loadState = () => {
+  try {
+    const r = localStorage.getItem("pod_app_v2");
+    const s = r ? JSON.parse(r) : {};
+    // Restaura la metadata real guardada para que favoritos/cola/progreso rendericen tras reiniciar.
+    if (s.podcasts) Object.assign(P_MAP, s.podcasts);
+    if (s.episodes) Object.assign(EP_MAP, s.episodes);
+    return s;
+  } catch { return {}; }
+};
+const saveState = (s) => {
+  try {
+    // Recopila la metadata de los podcasts/episodios referenciados para que sobreviva al reinicio.
+    const epIds = new Set([...(s.queue || []), ...(s.listened || []), ...(s.downloads || []), ...Object.keys(s.progress || {})]);
+    if (s.nowPlaying) epIds.add(s.nowPlaying);
+    const pIds = new Set(s.favorites || []);
+    const episodes = {};
+    epIds.forEach(id => { const e = EP_MAP[id]; if (e) { episodes[id] = e; pIds.add(e.pid); } });
+    const podcasts = {};
+    pIds.forEach(id => { const p = P_MAP[id]; if (p) podcasts[id] = p; });
+    localStorage.setItem("pod_app_v2", JSON.stringify({
+      favorites: s.favorites, listened: s.listened, downloads: s.downloads,
+      queue: s.queue, nowPlaying: s.nowPlaying, progress: s.progress, speed: s.speed,
+      podcasts, episodes,
+    }));
+  } catch {}
+};
 
 const chaptersFor = (ep) => {
   const titles = ["Introducción", "El contexto", "El nudo de la historia", "Lo que nadie esperaba", "Preguntas abiertas", "Cierre y conclusiones"];
@@ -192,6 +245,7 @@ export default function App() {
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState(null);
   const [detailEpsApi, setDetailEpsApi] = useState({}); // pid -> [episodes] | "loading"
+  const [topPodcasts, setTopPodcasts] = useState([]);
   const audioRef = useRef(typeof Audio !== 'undefined' ? new Audio() : null);
   const stateRef = useRef({});
 
@@ -337,6 +391,11 @@ export default function App() {
     return () => clearTimeout(t);
   }, [searchQuery]);
 
+  // Cargar el top de podcasts reales al arrancar (para la home "Descubrir")
+  useEffect(() => {
+    apiTopPodcasts(24).then(setTopPodcasts).catch(() => {});
+  }, []);
+
   // Al abrir el detalle de un podcast de la API, cargar sus episodios reales
   useEffect(() => {
     if (!detailPid || !detailPid.startsWith("it")) return;
@@ -396,7 +455,10 @@ export default function App() {
   const speedOpts = [1, 1.25, 1.5, 2, 0.75];
   const speedNames = { 0.75: "0.75x", 1: "1.0x", 1.25: "1.25x", 1.5: "1.5x", 2: "2.0x" };
 
-  const continueEps = EPISODES.filter(e => { const pr = progress[e.id] || 0; return pr > 0 && pr < e.durationSec && !has(listened, e.id); }).slice(0, 5);
+  const continueEps = Object.keys(progress)
+    .map(id => EP_MAP[id])
+    .filter(e => e && progress[e.id] > 0 && progress[e.id] < e.durationSec && !has(listened, e.id))
+    .slice(0, 5);
   const favPodcasts = favorites.map(id => P_MAP[id]).filter(Boolean);
   const searchResults = apiResults;
   const categories = [
@@ -456,7 +518,7 @@ export default function App() {
                   return (
                     <div key={ep.id} onClick={() => playEp(ep.id)} style={{ flex: "0 0 230px", background: "#211F26", borderRadius: 16, padding: 12, cursor: "pointer", display: "flex", flexDirection: "column", gap: 10 }}>
                       <div style={{ display: "flex", gap: 11, alignItems: "center" }}>
-                        <div style={{ width: 52, height: 52, flexShrink: 0 }}><Cover color={p.color} mono={p.mono} monoSize="19px" /></div>
+                        <div style={{ width: 52, height: 52, flexShrink: 0 }}><Cover color={p.color} mono={p.mono} monoSize="19px" img={p.artwork} /></div>
                         <div style={{ minWidth: 0 }}>
                           <div style={{ fontSize: 14, fontWeight: 500, color: "#F3EFF7", lineHeight: 1.25, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{ep.title}</div>
                           <div style={{ fontSize: 12, color: "#A39FAA", marginTop: 3 }}>{p.title}</div>
@@ -478,7 +540,7 @@ export default function App() {
           <div style={{ display: "flex", gap: 14, ...S.scrollX, padding: "12px 20px 16px" }}>
             {favPodcasts.map(p => (
               <div key={p.id} onClick={() => setDetailPid(p.id)} style={{ flex: "0 0 110px", cursor: "pointer" }}>
-                <div style={{ width: 110, height: 110 }}><Cover color={p.color} mono={p.mono} monoSize="34px" /></div>
+                <div style={{ width: 110, height: 110 }}><Cover color={p.color} mono={p.mono} monoSize="34px" img={p.artwork} /></div>
                 <div style={{ fontSize: 13, fontWeight: 500, color: "#E6E1E9", marginTop: 8, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title}</div>
                 <div style={{ fontSize: 11.5, color: "#8E8A95", marginTop: 1 }}>{p.author}</div>
               </div>
@@ -487,9 +549,9 @@ export default function App() {
 
           <div style={{ fontSize: 15, fontWeight: 600, color: "#E6E1E9", padding: "6px 20px 2px" }}>Descubrir podcasts</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 13, padding: "12px 20px 8px" }}>
-            {PODCASTS.map(p => (
+            {(topPodcasts.length ? topPodcasts : PODCASTS).map(p => (
               <div key={p.id} onClick={() => setDetailPid(p.id)} style={{ cursor: "pointer", background: "#1B191F", borderRadius: 16, padding: 12, display: "flex", flexDirection: "column", gap: 9 }}>
-                <div style={{ width: "100%", aspectRatio: "1" }}><Cover color={p.color} mono={p.mono} monoSize="40px" /></div>
+                <div style={{ width: "100%", aspectRatio: "1" }}><Cover color={p.color} mono={p.mono} monoSize="40px" img={p.artwork} /></div>
                 <div>
                   <div style={{ fontSize: 13.5, fontWeight: 500, color: "#F3EFF7", lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title}</div>
                   <div style={{ fontSize: 11.5, color: "#8E8A95", marginTop: 2 }}>{p.category}</div>
@@ -557,7 +619,7 @@ export default function App() {
             <>
               <div style={{ padding: "4px 20px 6px", fontSize: 12.5, fontWeight: 600, letterSpacing: ".4px", textTransform: "uppercase", color: "#E0533D" }}>Reproduciendo ahora</div>
               <div onClick={() => setPlayerOpen(true)} style={{ margin: "6px 16px 14px", padding: 12, background: "linear-gradient(135deg,#2a1c18,#211F26)", borderRadius: 16, display: "flex", alignItems: "center", gap: 13, cursor: "pointer", border: "1px solid rgba(224,83,61,.25)" }}>
-                <div style={{ width: 56, height: 56, flexShrink: 0 }}><Cover color={nowP.color} mono={nowP.mono} monoSize="20px" /></div>
+                <div style={{ width: 56, height: 56, flexShrink: 0 }}><Cover color={nowP.color} mono={nowP.mono} monoSize="20px" img={nowP.artwork} /></div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14.5, fontWeight: 500, color: "#F3EFF7", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nowEp.title}</div>
                   <div style={{ fontSize: 12.5, color: "#A39FAA", marginTop: 2 }}>{nowP.title}</div>
@@ -580,7 +642,7 @@ export default function App() {
                 <div style={{ width: 30, display: "flex", alignItems: "center", justifyContent: "center" }}>
                   <svg width="20" height="20" viewBox="0 0 24 24"><circle cx="9" cy="6" r="1.6" fill="#7D7986" /><circle cx="15" cy="6" r="1.6" fill="#7D7986" /><circle cx="9" cy="12" r="1.6" fill="#7D7986" /><circle cx="15" cy="12" r="1.6" fill="#7D7986" /><circle cx="9" cy="18" r="1.6" fill="#7D7986" /><circle cx="15" cy="18" r="1.6" fill="#7D7986" /></svg>
                 </div>
-                <div style={{ width: 48, height: 48, flexShrink: 0 }}><Cover color={p.color} mono={p.mono} monoSize="17px" /></div>
+                <div style={{ width: 48, height: 48, flexShrink: 0 }}><Cover color={p.color} mono={p.mono} monoSize="17px" img={p.artwork} /></div>
                 <div onClick={() => playEp(id)} style={{ flex: 1, minWidth: 0, cursor: "pointer" }}>
                   <div style={{ fontSize: 14, fontWeight: 500, color: "#F3EFF7", lineHeight: 1.25, overflow: "hidden", textOverflow: "ellipsis", display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical" }}>{ep.title}</div>
                   <div style={{ fontSize: 12, color: "#A39FAA", marginTop: 3 }}>{p.title} · {durLabel(ep.durationSec)}</div>
@@ -604,7 +666,7 @@ export default function App() {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, padding: "12px 20px 10px" }}>
               {favPodcasts.map(p => (
                 <div key={p.id} onClick={() => setDetailPid(p.id)} style={{ cursor: "pointer" }}>
-                  <div style={{ width: "100%", aspectRatio: "1" }}><Cover color={p.color} mono={p.mono} monoSize="24px" /></div>
+                  <div style={{ width: "100%", aspectRatio: "1" }}><Cover color={p.color} mono={p.mono} monoSize="24px" img={p.artwork} /></div>
                   <div style={{ fontSize: 12, fontWeight: 500, color: "#E6E1E9", marginTop: 6, lineHeight: 1.2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title}</div>
                 </div>
               ))}
@@ -616,7 +678,7 @@ export default function App() {
             const p = P_MAP[ep.pid];
             return (
               <div key={ep.id} onClick={() => playEp(ep.id)} style={{ display: "flex", alignItems: "center", gap: 13, padding: "9px 20px", cursor: "pointer" }}>
-                <div style={{ width: 48, height: 48, flexShrink: 0 }}><Cover color={p.color} mono={p.mono} monoSize="17px" /></div>
+                <div style={{ width: 48, height: 48, flexShrink: 0 }}><Cover color={p.color} mono={p.mono} monoSize="17px" img={p.artwork} /></div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 500, color: "#F3EFF7", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ep.title}</div>
                   <div style={{ fontSize: 12, color: "#A39FAA", marginTop: 2, display: "flex", alignItems: "center", gap: 5 }}>
@@ -633,7 +695,7 @@ export default function App() {
             const p = P_MAP[ep.pid];
             return (
               <div key={ep.id} onClick={() => playEp(ep.id)} style={{ display: "flex", alignItems: "center", gap: 13, padding: "9px 20px", cursor: "pointer", opacity: 0.72 }}>
-                <div style={{ width: 48, height: 48, flexShrink: 0 }}><Cover color={p.color} mono={p.mono} monoSize="17px" /></div>
+                <div style={{ width: 48, height: 48, flexShrink: 0 }}><Cover color={p.color} mono={p.mono} monoSize="17px" img={p.artwork} /></div>
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 14, fontWeight: 500, color: "#E6E1E9", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{ep.title}</div>
                   <div style={{ fontSize: 12, color: "#A39FAA", marginTop: 2, display: "flex", alignItems: "center", gap: 5 }}>
@@ -651,7 +713,7 @@ export default function App() {
       {nowEp && !playerOpen && (
         <div style={{ margin: "0 8px", borderRadius: 12, overflow: "hidden", background: "#2A1E1B", boxShadow: "0 6px 22px rgba(0,0,0,.4)" }}>
           <div onClick={() => setPlayerOpen(true)} style={{ display: "flex", alignItems: "center", gap: 11, padding: "8px 10px", cursor: "pointer" }}>
-            <div style={{ width: 42, height: 42, flexShrink: 0 }}><Cover color={nowP.color} mono={nowP.mono} monoSize="15px" /></div>
+            <div style={{ width: 42, height: 42, flexShrink: 0 }}><Cover color={nowP.color} mono={nowP.mono} monoSize="15px" img={nowP.artwork} /></div>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ fontSize: 13.5, fontWeight: 500, color: "#F3EFF7", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nowEp.title}</div>
               <div style={{ fontSize: 11.5, color: "#C9A89F", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{nowP.title}</div>
@@ -750,7 +812,7 @@ export default function App() {
             <div style={{ width: 42 }} />
           </div>
           <div style={{ flex: 1, ...S.scroll, display: "flex", flexDirection: "column", padding: "0 26px" }}>
-            <div style={{ width: "100%", aspectRatio: "1", margin: "14px 0 22px", boxShadow: "0 24px 60px rgba(0,0,0,.5)", borderRadius: 18 }}><Cover color={nowP.color} mono={nowP.mono} monoSize="92px" /></div>
+            <div style={{ width: "100%", aspectRatio: "1", margin: "14px 0 22px", boxShadow: "0 24px 60px rgba(0,0,0,.5)", borderRadius: 18 }}><Cover color={nowP.color} mono={nowP.mono} monoSize="92px" img={nowP.artwork} /></div>
             <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 14 }}>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontFamily: "'Roboto Serif',serif", fontSize: 22, fontWeight: 600, color: "#F8F5FB", lineHeight: 1.2 }}>{nowEp.title}</div>
