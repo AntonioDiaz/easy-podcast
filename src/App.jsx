@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 
 // ─── Cover component ───────────────────────────────────────────────
-function Cover({ color, mono, monoSize = "20px", style = {} }) {
+function Cover({ color, mono, monoSize = "20px", img, style = {} }) {
   return (
     <div style={{
       width: "100%", height: "100%", position: "relative",
@@ -9,9 +9,15 @@ function Cover({ color, mono, monoSize = "20px", style = {} }) {
       display: "flex", alignItems: "center", justifyContent: "center",
       background: color, ...style
     }}>
-      <div style={{ position: "absolute", inset: 0, background: "linear-gradient(140deg,rgba(255,255,255,.22),rgba(0,0,0,.34))" }} />
-      <div style={{ position: "absolute", right: "-18%", bottom: "-22%", width: "62%", height: "62%", borderRadius: "50%", background: "rgba(255,255,255,.10)" }} />
-      <span style={{ position: "relative", fontFamily: "'Roboto',system-ui,sans-serif", fontWeight: 600, fontSize: monoSize, color: "rgba(255,255,255,.94)", letterSpacing: ".5px" }}>{mono}</span>
+      {img ? (
+        <img src={img} alt="" loading="lazy" style={{ position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" }} />
+      ) : (
+        <>
+          <div style={{ position: "absolute", inset: 0, background: "linear-gradient(140deg,rgba(255,255,255,.22),rgba(0,0,0,.34))" }} />
+          <div style={{ position: "absolute", right: "-18%", bottom: "-22%", width: "62%", height: "62%", borderRadius: "50%", background: "rgba(255,255,255,.10)" }} />
+          <span style={{ position: "relative", fontFamily: "'Roboto',system-ui,sans-serif", fontWeight: 600, fontSize: monoSize, color: "rgba(255,255,255,.94)", letterSpacing: ".5px" }}>{mono}</span>
+        </>
+      )}
     </div>
   );
 }
@@ -49,8 +55,54 @@ const EPISODES = [
   mkEp("e16", "p8", "Desapariciones en el bosque", 55, "6 jun", "Patrones inquietantes, testigos que no coinciden y un mapa lleno de puntos sin explicación."),
 ];
 
+// Mutables: los datos de la API se fusionan aquí para que todas las búsquedas por id sigan funcionando.
 const EP_MAP = Object.fromEntries(EPISODES.map(e => [e.id, e]));
 const P_MAP = Object.fromEntries(PODCASTS.map(p => [p.id, p]));
+
+// ─── iTunes Search API (sin key, sin registro, con CORS) ───────────
+const ITUNES = "https://itunes.apple.com";
+const PALETTE = ["#4D6B7C", "#3F7C6B", "#7C5C4D", "#6B4D7C", "#4D7C6B", "#4D5B7C", "#7C4D5B", "#5A4D7C"];
+const colorFor = (s) => PALETTE[Math.abs([...(s || "?")].reduce((a, c) => a + c.charCodeAt(0), 0)) % PALETTE.length];
+const monoFor = (name) => (name || "").split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0]).join("").toUpperCase() || "PC";
+const stripHtml = (s) => (s || "").replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+
+const mapPodcast = (r) => ({
+  id: "it" + r.collectionId,
+  collectionId: r.collectionId,
+  title: r.collectionName || r.trackName || "Podcast",
+  author: r.artistName || "",
+  category: (r.genres && r.genres[0]) || "Podcast",
+  color: colorFor(r.collectionName),
+  mono: monoFor(r.artistName || r.collectionName),
+  desc: r.collectionName || "",
+  artwork: r.artworkUrl600 || r.artworkUrl100 || null,
+});
+
+const mapEpisode = (r, pid) => ({
+  id: "ep" + r.trackId,
+  pid,
+  title: r.trackName || "Episodio",
+  durationSec: Math.round((r.trackTimeMillis || 0) / 1000) || 1800,
+  dateLabel: r.releaseDate ? new Date(r.releaseDate).toLocaleDateString("es-ES", { day: "numeric", month: "short" }) : "",
+  desc: stripHtml(r.description).slice(0, 240),
+  url: r.episodeUrl,
+});
+
+async function apiSearch(term) {
+  const res = await fetch(`${ITUNES}/search?media=podcast&limit=25&country=ES&term=${encodeURIComponent(term)}`);
+  const data = await res.json();
+  const podcasts = (data.results || []).filter(r => r.collectionId).map(mapPodcast);
+  podcasts.forEach(p => { P_MAP[p.id] = p; });
+  return podcasts;
+}
+
+async function apiEpisodes(podcast) {
+  const res = await fetch(`${ITUNES}/lookup?id=${podcast.collectionId}&entity=podcastEpisode&limit=50`);
+  const data = await res.json();
+  const eps = (data.results || []).filter(r => r.kind === "podcast-episode" && r.episodeUrl).map(r => mapEpisode(r, podcast.id));
+  eps.forEach(e => { EP_MAP[e.id] = e; });
+  return eps;
+}
 
 // ─── Helpers ───────────────────────────────────────────────────────
 const fmt = (sec) => { sec = Math.max(0, Math.round(sec)); const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60; const p = n => String(n).padStart(2, "0"); return h > 0 ? `${h}:${p(m)}:${p(s)}` : `${m}:${p(s)}`; };
@@ -65,6 +117,33 @@ const chaptersFor = (ep) => {
   const titles = ["Introducción", "El contexto", "El nudo de la historia", "Lo que nadie esperaba", "Preguntas abiertas", "Cierre y conclusiones"];
   const n = Math.min(6, Math.max(3, Math.round(ep.durationSec / 720)));
   return Array.from({ length: n }, (_, i) => ({ title: titles[i] || `Parte ${i + 1}`, at: Math.round(ep.durationSec * i / n) }));
+};
+
+// Genera una carátula PNG (data URI) que imita el componente Cover, para la Media Session.
+const artworkCache = {};
+const makeArtwork = (color, mono) => {
+  if (typeof document === "undefined") return null;
+  const key = color + mono;
+  if (artworkCache[key]) return artworkCache[key];
+  const size = 512;
+  const c = document.createElement("canvas");
+  c.width = c.height = size;
+  const ctx = c.getContext("2d");
+  ctx.fillStyle = color;
+  ctx.fillRect(0, 0, size, size);
+  const g = ctx.createLinearGradient(0, 0, size, size);
+  g.addColorStop(0, "rgba(255,255,255,.22)");
+  g.addColorStop(1, "rgba(0,0,0,.34)");
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, size, size);
+  ctx.fillStyle = "rgba(255,255,255,.94)";
+  ctx.font = "600 200px Roboto, system-ui, sans-serif";
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(mono, size / 2, size / 2);
+  const url = c.toDataURL("image/png");
+  artworkCache[key] = url;
+  return url;
 };
 
 // ─── Icons ─────────────────────────────────────────────────────────
@@ -109,6 +188,10 @@ export default function App() {
   const [progress, setProgress] = useState(saved.progress || { e1: 18 * 60, e6: 11 * 60, e14: 5 * 60, e2: 39 * 60, e10: 33 * 60 });
   const [dragFrom, setDragFrom] = useState(null);
   const [dragOver, setDragOver] = useState(null);
+  const [apiResults, setApiResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+  const [searchError, setSearchError] = useState(null);
+  const [detailEpsApi, setDetailEpsApi] = useState({}); // pid -> [episodes] | "loading"
   const audioRef = useRef(typeof Audio !== 'undefined' ? new Audio() : null);
   const stateRef = useRef({});
 
@@ -145,8 +228,20 @@ export default function App() {
     const audio = audioRef.current;
     if (!audio) return;
     const onTimeUpdate = () => {
-      const { nowPlaying } = stateRef.current;
+      const { nowPlaying, speed } = stateRef.current;
       setProgress(prev => ({ ...prev, [nowPlaying]: audio.currentTime }));
+      if ("mediaSession" in navigator && "setPositionState" in navigator.mediaSession) {
+        const ep = EP_MAP[nowPlaying];
+        if (ep && isFinite(audio.duration)) {
+          try {
+            navigator.mediaSession.setPositionState({
+              duration: audio.duration,
+              playbackRate: speed,
+              position: Math.min(audio.currentTime, audio.duration),
+            });
+          } catch {}
+        }
+      }
     };
     const onEnded = () => {
       const { queue, nowPlaying } = stateRef.current;
@@ -163,6 +258,96 @@ export default function App() {
       audio.removeEventListener('ended', onEnded);
     };
   }, []);
+
+  // Media Session: metadata (título, podcast, carátula) en la notificación de Android
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    const ep = EP_MAP[nowPlaying];
+    const p = ep ? P_MAP[ep.pid] : null;
+    if (!ep || !p) return;
+    const art = makeArtwork(p.color, p.mono);
+    navigator.mediaSession.metadata = new MediaMetadata({
+      title: ep.title,
+      artist: p.title,
+      album: p.author,
+      artwork: art ? [{ src: art, sizes: "512x512", type: "image/png" }] : [],
+    });
+  }, [nowPlaying]);
+
+  // Media Session: estado de reproducción (play/pause)
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    navigator.mediaSession.playbackState = isPlaying ? "playing" : "paused";
+  }, [isPlaying]);
+
+  // Media Session: handlers de los controles (play, pause, ±15/30s, anterior, siguiente, seek)
+  useEffect(() => {
+    if (!("mediaSession" in navigator)) return;
+    const audio = audioRef.current;
+    const ms = navigator.mediaSession;
+    const seekBy = (d) => {
+      const { nowPlaying, progress } = stateRef.current;
+      const ep = EP_MAP[nowPlaying]; if (!ep || !audio) return;
+      const v = Math.max(0, Math.min(ep.durationSec, (progress[nowPlaying] || 0) + d));
+      audio.currentTime = v;
+      setProgress(p => ({ ...p, [nowPlaying]: v }));
+    };
+    const goTo = (offset) => {
+      const { queue, nowPlaying } = stateRef.current;
+      const nid = queue[queue.indexOf(nowPlaying) + offset];
+      if (!nid) return;
+      setProgress(p => { const ep = EP_MAP[nid]; const cur = p[nid] || 0; return cur >= ep.durationSec ? { ...p, [nid]: 0 } : p; });
+      setNowPlaying(nid); setIsPlaying(true);
+    };
+    const handlers = {
+      play: () => setIsPlaying(true),
+      pause: () => setIsPlaying(false),
+      seekbackward: () => seekBy(-15),
+      seekforward: () => seekBy(30),
+      previoustrack: () => goTo(-1),
+      nexttrack: () => goTo(1),
+      seekto: (details) => {
+        if (!audio || details.seekTime == null) return;
+        audio.currentTime = details.seekTime;
+        const { nowPlaying } = stateRef.current;
+        setProgress(p => ({ ...p, [nowPlaying]: details.seekTime }));
+      },
+    };
+    for (const [action, handler] of Object.entries(handlers)) {
+      try { ms.setActionHandler(action, handler); } catch {}
+    }
+    return () => {
+      for (const action of Object.keys(handlers)) {
+        try { ms.setActionHandler(action, null); } catch {}
+      }
+    };
+  }, []);
+
+  // Búsqueda en vivo contra la iTunes API (con debounce)
+  useEffect(() => {
+    const term = searchQuery.trim();
+    if (!term) { setApiResults([]); setSearching(false); setSearchError(null); return; }
+    setSearching(true); setSearchError(null);
+    const t = setTimeout(() => {
+      apiSearch(term)
+        .then(r => setApiResults(r))
+        .catch(() => setSearchError("No se pudo conectar. Revisa tu conexión."))
+        .finally(() => setSearching(false));
+    }, 400);
+    return () => clearTimeout(t);
+  }, [searchQuery]);
+
+  // Al abrir el detalle de un podcast de la API, cargar sus episodios reales
+  useEffect(() => {
+    if (!detailPid || !detailPid.startsWith("it")) return;
+    if (detailEpsApi[detailPid]) return; // ya cargado o cargando
+    const p = P_MAP[detailPid];
+    if (!p) return;
+    setDetailEpsApi(m => ({ ...m, [detailPid]: "loading" }));
+    apiEpisodes(p)
+      .then(eps => setDetailEpsApi(m => ({ ...m, [detailPid]: eps })))
+      .catch(() => setDetailEpsApi(m => ({ ...m, [detailPid]: [] })));
+  }, [detailPid]);
 
   // mutations
   const playEp = (id) => {
@@ -212,16 +397,19 @@ export default function App() {
   const speedNames = { 0.75: "0.75x", 1: "1.0x", 1.25: "1.25x", 1.5: "1.5x", 2: "2.0x" };
 
   const continueEps = EPISODES.filter(e => { const pr = progress[e.id] || 0; return pr > 0 && pr < e.durationSec && !has(listened, e.id); }).slice(0, 5);
-  const favPodcasts = PODCASTS.filter(p => has(favorites, p.id));
-  const q = searchQuery.trim().toLowerCase();
-  const searchResults = q ? PODCASTS.filter(p => p.title.toLowerCase().includes(q) || p.author.toLowerCase().includes(q) || p.category.toLowerCase().includes(q)) : [];
+  const favPodcasts = favorites.map(id => P_MAP[id]).filter(Boolean);
+  const searchResults = apiResults;
   const categories = [
     { name: "Historia", bg: "#4D6B7C" }, { name: "Ciencia", bg: "#3F7C6B" },
     { name: "Negocios", bg: "#7C5C4D" }, { name: "Cine", bg: "#6B4D7C" },
     { name: "Bienestar", bg: "#4D7C6B" }, { name: "True Crime", bg: "#5A4D7C" },
   ];
   const detailP = detailPid ? P_MAP[detailPid] : null;
-  const detailEps = detailP ? EPISODES.filter(e => e.pid === detailP.id) : [];
+  const detailApiEps = detailP && detailEpsApi[detailP.id];
+  const detailLoading = detailApiEps === "loading";
+  const detailEps = detailP
+    ? (Array.isArray(detailApiEps) ? detailApiEps : EPISODES.filter(e => e.pid === detailP.id))
+    : [];
 
   // ── Styles ──
   const S = {
@@ -326,18 +514,22 @@ export default function App() {
           </div>
           {searchQuery ? (
             <>
-              <div style={{ padding: "8px 20px 4px", fontSize: 13, color: "#8E8A95" }}>{searchResults.length} {searchResults.length === 1 ? "resultado" : "resultados"}</div>
+              {searching && searchResults.length === 0 && <div style={{ textAlign: "center", color: "#8E8A95", fontSize: 14, padding: "48px 30px" }}>Buscando…</div>}
+              {searchError && <div style={{ textAlign: "center", color: "#E0533D", fontSize: 14, padding: "48px 30px" }}>{searchError}</div>}
+              {!searchError && searchResults.length > 0 && (
+                <div style={{ padding: "8px 20px 4px", fontSize: 13, color: "#8E8A95" }}>{searchResults.length} {searchResults.length === 1 ? "resultado" : "resultados"}</div>
+              )}
               {searchResults.map(p => (
                 <div key={p.id} onClick={() => setDetailPid(p.id)} style={{ display: "flex", alignItems: "center", gap: 14, padding: "9px 20px", cursor: "pointer" }}>
-                  <div style={{ width: 56, height: 56, flexShrink: 0 }}><Cover color={p.color} mono={p.mono} monoSize="20px" /></div>
+                  <div style={{ width: 56, height: 56, flexShrink: 0 }}><Cover color={p.color} mono={p.mono} monoSize="20px" img={p.artwork} /></div>
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 15, fontWeight: 500, color: "#F3EFF7", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.title}</div>
-                    <div style={{ fontSize: 13, color: "#A39FAA", marginTop: 2 }}>Podcast · {p.author}</div>
+                    <div style={{ fontSize: 13, color: "#A39FAA", marginTop: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Podcast · {p.author}</div>
                   </div>
                   <div onClick={e => { e.stopPropagation(); setFavorites(fav => toggle(fav, p.id)); }}><IcHeart filled={has(favorites, p.id)} /></div>
                 </div>
               ))}
-              {searchResults.length === 0 && <div style={{ textAlign: "center", color: "#8E8A95", fontSize: 14, padding: "48px 30px" }}>Sin resultados para "{searchQuery}"</div>}
+              {!searching && !searchError && searchResults.length === 0 && <div style={{ textAlign: "center", color: "#8E8A95", fontSize: 14, padding: "48px 30px" }}>Sin resultados para "{searchQuery}"</div>}
             </>
           ) : (
             <>
@@ -501,11 +693,11 @@ export default function App() {
               </div>
             </div>
             <div style={{ display: "flex", gap: 16, padding: "6px 20px 14px", alignItems: "flex-end" }}>
-              <div style={{ width: 120, height: 120, flexShrink: 0, boxShadow: "0 12px 30px rgba(0,0,0,.45)", borderRadius: 14 }}><Cover color={detailP.color} mono={detailP.mono} monoSize="42px" /></div>
+              <div style={{ width: 120, height: 120, flexShrink: 0, boxShadow: "0 12px 30px rgba(0,0,0,.45)", borderRadius: 14 }}><Cover color={detailP.color} mono={detailP.mono} monoSize="42px" img={detailP.artwork} /></div>
               <div style={{ flex: 1, minWidth: 0, paddingBottom: 4 }}>
                 <div style={{ fontFamily: "'Roboto Serif',serif", fontSize: 22, fontWeight: 600, color: "#F3EFF7", lineHeight: 1.15 }}>{detailP.title}</div>
                 <div style={{ fontSize: 13.5, color: "#C9C4CF", marginTop: 6 }}>{detailP.author}</div>
-                <div style={{ fontSize: 12, color: "#8E8A95", marginTop: 4 }}>{detailP.category} · {detailEps.length} episodios</div>
+                <div style={{ fontSize: 12, color: "#8E8A95", marginTop: 4 }}>{detailP.category} · {detailLoading ? "cargando…" : `${detailEps.length} episodios`}</div>
               </div>
             </div>
             <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "4px 20px 14px" }}>
@@ -519,6 +711,7 @@ export default function App() {
             </div>
             <div style={{ fontSize: 13.5, lineHeight: 1.55, color: "#B5B0BC", padding: "0 20px 16px" }}>{detailP.desc}</div>
             <div style={{ fontSize: 15, fontWeight: 600, color: "#E6E1E9", padding: "2px 20px 4px" }}>Episodios</div>
+            {detailLoading && <div style={{ color: "#8E8A95", fontSize: 14, padding: "20px" }}>Cargando episodios…</div>}
             {detailEps.map(ep => {
               const isListened = has(listened, ep.id); const inq = has(queue, ep.id); const dl = has(downloads, ep.id);
               return (

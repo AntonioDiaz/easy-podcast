@@ -46,12 +46,23 @@ The app is a functional prototype of a podcast client with:
 - Navigation, favorites, downloads, reorderable queue (drag & drop)
 - Persistence via `localStorage`
 - **Real audio** — HTML5 `<audio>` element with play/pause/seek/speed and auto-advance to next episode
-- **No real API** — podcasts and episodes are hardcoded data in `App.jsx` (placeholder audio: SoundHelix MP3)
+- **Media Session (web only)** — metadata, playback state and control handlers via `navigator.mediaSession`; works in desktop browsers but **not** inside the Android WebView (see below)
+- **Real content (Search)** — the Search screen queries the free **iTunes Search API** (no key, no signup, CORS-enabled). Podcast detail loads real episodes with real audio URLs and cover art.
+- **Demo content (Home)** — the Home screen (favorites, "discover") still shows hardcoded sample data
+
+## iTunes Search API
+
+No credentials required. Two endpoints, both CORS-enabled so they work in the browser and the Android WebView:
+
+- **Search podcasts:** `https://itunes.apple.com/search?media=podcast&term=<query>`
+- **Episodes for a podcast:** `https://itunes.apple.com/lookup?id=<collectionId>&entity=podcastEpisode`
+
+> Podcast Index was the original plan but blocks signups from free email providers (Gmail/Outlook); iTunes needs no account.
 
 ## Pending next steps
 
-- **Media Session API:** playback controls in the Android notification bar
-- **Content API:** connect to the Podcast Index API (free) to search and load real podcasts
+- **Wire the Home screen to real content** (currently demo data)
+- **Native Android media notification:** the Android WebView does not support the Media Session Web API, so the lock-screen/notification controls require a native Capacitor plugin (e.g. `@jofr/capacitor-media-session`) plus the `POST_NOTIFICATIONS` runtime permission. Deferred.
 - **APK signing:** required to publish on Google Play
 
 ## Useful commands
